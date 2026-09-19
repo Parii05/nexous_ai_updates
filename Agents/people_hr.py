@@ -114,7 +114,10 @@ def people_agent(question: str, area=None) -> dict:
         f"User question:\n{question}"
     )
 
-    result = answer_question(enhanced_question)
+    result = answer_question(
+        enhanced_question,
+        domain="People / HR",
+    )
 
     result["domain"] = "People / HR"
     result["capability"] = detected_area
