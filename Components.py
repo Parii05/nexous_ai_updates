@@ -28,6 +28,7 @@ API_URL = os.getenv("NEXUS_API_URL", "http://localhost:8000/ask")
 UPLOAD_URL = os.getenv("NEXUS_UPLOAD_URL", "http://localhost:8000/upload")
 DOCUMENTS_URL = os.getenv("NEXUS_DOCUMENTS_URL", "http://localhost:8000/documents")
 ACTION_URL = os.getenv("NEXUS_ACTION_URL", "http://localhost:8000/domain-action")
+DASHBOARD_URL = os.getenv("NEXUS_DASHBOARD_URL", "http://localhost:8000/domain-dashboard")
 
 
 # =========================================================
@@ -81,6 +82,9 @@ def init_session_state():
 
     if "domain_action_results" not in st.session_state:
         st.session_state.domain_action_results = {}
+
+    if "domain_dashboard_results" not in st.session_state:
+        st.session_state.domain_dashboard_results = {}
 
 
 # =========================================================
@@ -569,6 +573,75 @@ def inject_css():
             font-weight: 600;
         }
 
+
+        /* =====================================================
+           AI INSIGHTS DASHBOARD
+           ===================================================== */
+
+        .insights-shell {
+            background-color: #0f1318;
+            border: 1px solid #242a32;
+            border-radius: 14px;
+            padding: 20px;
+            margin-top: 12px;
+        }
+
+        .insights-status {
+            color: #68717e;
+            font-size: 10px;
+            margin-bottom: 16px;
+        }
+
+        .insight-card {
+            background-color: #11151a;
+            border: 1px solid #242a32;
+            border-radius: 11px;
+            padding: 16px;
+            min-height: 130px;
+        }
+
+        .insight-card-title {
+            color: #dfe3e8;
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 9px;
+        }
+
+        .insight-unavailable {
+            color: #59626e;
+            font-size: 11px;
+            line-height: 1.5;
+        }
+
+        .insight-item {
+            color: #b8c0ca;
+            font-size: 11px;
+            line-height: 1.55;
+            margin: 6px 0;
+        }
+
+        .insight-badge {
+            display: inline-block;
+            color: #8d98a6;
+            background-color: #181d23;
+            border: 1px solid #303640;
+            border-radius: 20px;
+            padding: 4px 8px;
+            font-size: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            margin-bottom: 8px;
+        }
+
+        .dashboard-facts {
+            border-left: 2px solid #596575;
+            padding-left: 14px;
+        }
+
+        .dashboard-ai {
+            border-left: 2px solid #8a8060;
+            padding-left: 14px;
+        }
 
         /* =====================================================
            ACTIVITY
@@ -1396,6 +1469,7 @@ def render_domain_workspace(domain: str):
     render_sidebar(domain)
     render_header(domain)
     render_metrics()
+    render_domain_dashboard(domain)
     render_domain_quick_actions(domain)
     render_domain_upload_section(domain)
     render_document_library(domain)
