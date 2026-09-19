@@ -741,10 +741,11 @@ def render_sidebar(active_domain: str):
 def render_upload_widget(active_domain: str):
 
     uploaded_file = st.file_uploader(
-        "Upload PDF",
-        type=["pdf"],
+        "Upload knowledge document",
+        type=["pdf", "txt", "docx", "png", "jpg", "jpeg", "webp"],
         label_visibility="collapsed",
         key=f"uploader_{active_domain}",
+        help="Supported: PDF, TXT, DOCX and common image formats. Images are OCR processed.",
     )
 
     if not uploaded_file:
@@ -807,6 +808,88 @@ def render_upload_widget(active_domain: str):
 
             except requests.exceptions.RequestException as e:
                 st.error(f"Upload failed: {e}")
+
+
+# =========================================================
+# MAIN DOCUMENT UPLOAD
+# =========================================================
+
+def render_domain_upload_section(active_domain: str):
+    """Render the document ingestion area inside every domain workspace."""
+
+    st.markdown('<div class="section-label">KNOWLEDGE INGESTION</div>', unsafe_allow_html=True)
+
+    st.markdown(
+        '<div class="ask-title">Add domain knowledge</div>'
+        '<div class="ask-description">'
+        'Upload documents or images for this domain. PDF, TXT and DOCX files are '
+        'indexed directly; images are passed through OCR before indexing.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    uploaded_file = st.file_uploader(
+        "Choose a document",
+        type=["pdf", "txt", "docx", "png", "jpg", "jpeg", "webp"],
+        key=f"main_upload_{active_domain}",
+        help="Images use OCR. Legacy .doc files are not supported; save them as .docx.",
+    )
+
+    if uploaded_file is None:
+        return
+
+    col1, col2 = st.columns([4, 1])
+
+    with col1:
+        st.caption(f"Selected: **{uploaded_file.name}** · {uploaded_file.size / 1024:.1f} KB")
+
+    with col2:
+        index_clicked = st.button(
+            "Index Document",
+            type="primary",
+            use_container_width=True,
+            key=f"main_index_{active_domain}",
+        )
+
+    if not index_clicked:
+        return
+
+    with st.spinner("Extracting, processing and indexing..."):
+        try:
+            response = requests.post(
+                UPLOAD_URL,
+                files={
+                    "file": (
+                        uploaded_file.name,
+                        uploaded_file.getvalue(),
+                        uploaded_file.type or "application/octet-stream",
+                    )
+                },
+                data={"domain": active_domain},
+                timeout=300,
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                st.success(
+                    f"Indexed **{data.get('filename', uploaded_file.name)}** "
+                    f"for **{data.get('domain', active_domain)}**."
+                )
+                if data.get("ocr"):
+                    st.info("OCR was used to extract text from the uploaded image.")
+            else:
+                try:
+                    detail = response.json().get("detail", "Unknown error")
+                except ValueError:
+                    detail = "Unknown error"
+                st.error(f"Upload failed: {detail}")
+
+        except requests.exceptions.ConnectionError:
+            st.error(f"Cannot connect to {UPLOAD_URL}. Make sure FastAPI is running.")
+        except requests.exceptions.Timeout:
+            st.error("Upload timed out.")
+        except requests.exceptions.RequestException as exc:
+            st.error(f"Upload failed: {exc}")
 
 
 # =========================================================
@@ -1109,4 +1192,5 @@ def render_domain_workspace(domain: str):
     render_sidebar(domain)
     render_header(domain)
     render_metrics()
+    render_domain_upload_section(domain)
     render_ask_and_result(domain)
