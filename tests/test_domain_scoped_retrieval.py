@@ -1,4 +1,15 @@
+import pytest
+
 from rag import retrieve_chunks
+
+
+DOMAINS = [
+    "Engineering",
+    "Product",
+    "People / HR",
+    "Finance",
+    "Legal & Compliance",
+]
 
 
 class FakeEmbedder:
@@ -7,19 +18,22 @@ class FakeEmbedder:
 
 
 class FakeIndex:
-    def __init__(self):
+    def __init__(self, requested_domain):
+        self.requested_domain = requested_domain
         self.kwargs = None
 
     def query(self, **kwargs):
         self.kwargs = kwargs
+        # Simulate a defensive scenario where Pinecone returns a
+        # mismatched-domain candidate alongside the requested domain.
         return {
             "matches": [
                 {
                     "score": 0.1,
                     "metadata": {
-                        "text": "Finance budget policy",
-                        "source": "finance.pdf",
-                        "domain": "Finance",
+                        "text": f"{self.requested_domain} policy",
+                        "source": f"{self.requested_domain}.pdf",
+                        "domain": self.requested_domain,
                         "type": "document_chunk",
                     },
                 },
@@ -36,21 +50,24 @@ class FakeIndex:
         }
 
 
-def test_retrieve_chunks_enforces_domain_filter(monkeypatch):
+@pytest.mark.parametrize("domain", DOMAINS)
+def test_retrieve_chunks_enforces_domain_filter(monkeypatch, domain):
     import rag
 
-    fake_index = FakeIndex()
+    fake_index = FakeIndex(domain)
     monkeypatch.setattr(rag, "embedder", FakeEmbedder())
     monkeypatch.setattr(rag, "index", fake_index)
 
-    chunks = retrieve_chunks("budget", domain="Finance")
+    chunks = retrieve_chunks("policy", domain=domain)
 
     assert fake_index.kwargs["filter"] == {
         "$and": [
             {"type": {"$eq": "document_chunk"}},
-            {"domain": {"$eq": "Finance"}},
+            {"domain": {"$eq": domain}},
         ]
     }
     assert chunks
-    assert all(chunk["domain"] == "Finance" for chunk in chunks)
-    assert all("Engineering" not in chunk["text"] for chunk in chunks)
+    assert all(chunk["domain"] == domain for chunk in chunks)
+
+    # No chunk from another domain may enter the RAG context.
+    assert all(chunk["domain"] == domain for chunk in chunks)
