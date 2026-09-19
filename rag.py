@@ -6,6 +6,7 @@ import uuid
 from collections import Counter
 from datetime import datetime
 from typing import TypedDict
+from pathlib import Path
 import fitz
 from groq import Groq
 from langgraph.graph import StateGraph, END
@@ -131,13 +132,12 @@ def chunk_text(
 # 4. UPLOAD PDF TO PINECONE
 # ---------------------------------------------------------------------
 
-def upload_pdf(pdf_path: str):
-    print(f"[+] Extracting text from: {pdf_path}")
-
-    raw_text = extract_text_from_pdf(pdf_path)
+def _index_text(raw_text: str, source_name: str, domain: str | None = None, ocr: bool = False):
+    """Chunk, embed and index extracted text with source/domain metadata."""
     chunks = chunk_text(raw_text)
 
-    print(f"[+] {len(chunks)} chunks created")
+    if not chunks:
+        raise ValueError("No readable text could be extracted from the document.")
 
     embeddings = embedder.encode(chunks, show_progress_bar=True)
 
@@ -147,25 +147,78 @@ def upload_pdf(pdf_path: str):
             emb.tolist(),
             {
                 "text": chunk,
-                "source": pdf_path,
+                "source": source_name,
+                "domain": domain or "General",
                 "type": "document_chunk",
+                "ocr": ocr,
                 "created_at": datetime.utcnow().isoformat(),
             },
         )
         for emb, chunk in zip(embeddings, chunks)
     ]
 
-    batch_size = 100
+    for i in range(0, len(vectors), 100):
+        index.upsert(vectors=vectors[i:i + 100], namespace=DOC_NAMESPACE)
 
-    for i in range(0, len(vectors), batch_size):
-        index.upsert(
-            vectors=vectors[i:i + batch_size],
-            namespace=DOC_NAMESPACE,
+    print(f"[+] Uploaded {len(vectors)} chunks to Pinecone namespace '{DOC_NAMESPACE}'")
+    return len(vectors)
+
+
+def upload_pdf(pdf_path: str, source_name: str | None = None, domain: str | None = None):
+    """Index a PDF document."""
+    print(f"[+] Extracting text from: {pdf_path}")
+    raw_text = extract_text_from_pdf(pdf_path)
+    return _index_text(
+        raw_text,
+        source_name or Path(pdf_path).name,
+        domain=domain,
+    )
+
+
+def upload_document(file_path: str, source_name: str | None = None, domain: str | None = None):
+    """Extract and index PDF, TXT, DOCX or image documents.
+
+    Images use Tesseract OCR. DOCX uses python-docx. Legacy .doc files
+    should be converted to DOCX before upload.
+    """
+    path = Path(file_path)
+    extension = path.suffix.lower()
+    source = source_name or path.name
+
+    if extension == ".pdf":
+        return upload_pdf(file_path, source_name=source, domain=domain)
+
+    if extension == ".txt":
+        raw_text = path.read_text(encoding="utf-8", errors="ignore")
+        return _index_text(raw_text, source, domain=domain)
+
+    if extension == ".docx":
+        from docx import Document
+
+        document = Document(file_path)
+        raw_text = "\n\n".join(
+            paragraph.text.strip()
+            for paragraph in document.paragraphs
+            if paragraph.text.strip()
         )
+        return _index_text(raw_text, source, domain=domain)
 
-    print(
-        f"[+] Uploaded {len(vectors)} document chunks "
-        f"to Pinecone namespace '{DOC_NAMESPACE}'"
+    if extension in {".png", ".jpg", ".jpeg", ".webp"}:
+        try:
+            import pytesseract
+            from PIL import Image
+        except ImportError as exc:
+            raise RuntimeError(
+                "OCR dependencies are missing. Install pytesseract and Pillow, "
+                "and make sure the Tesseract OCR engine is installed."
+            ) from exc
+
+        text = pytesseract.image_to_string(Image.open(file_path))
+        return _index_text(text, source, domain=domain, ocr=True)
+
+    raise ValueError(
+        f"Unsupported document type: {extension or 'unknown'}. "
+        "Supported types: PDF, TXT, DOCX, PNG, JPG, JPEG, WEBP."
     )
 
 # ---------------------------------------------------------------------
