@@ -190,6 +190,7 @@ async def upload_document(
         result = ingestion_agent(
             temp_path,
             domain=domain,
+            source_name=file.filename,
         )
 
 
