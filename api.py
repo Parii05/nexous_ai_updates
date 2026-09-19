@@ -7,6 +7,7 @@ import os
 from Agents.orchestrator import orchestrator_agent
 from Agents.ingestion import ingestion_agent
 from Agents.domain_config import DOMAIN_REGISTRY
+from Agents.domain_intelligence import run_domain_action
 from rag import list_document_records
 
 
@@ -29,6 +30,11 @@ class QueryRequest(BaseModel):
     query: str
     domain: str | None = None
     capability: str | None = None
+
+
+class DomainActionRequest(BaseModel):
+    domain: str
+    action: str
 
 
 # =========================================================
@@ -292,3 +298,23 @@ def documents(domain: str | None = None):
             status_code=500,
             detail=f"Unable to load document library: {str(e)}",
         )
+
+
+# =========================================================
+# DOMAIN INTELLIGENCE ACTIONS
+# =========================================================
+
+@app.post("/domain-action")
+def domain_action(request: DomainActionRequest):
+    if request.domain not in DOMAIN_REGISTRY:
+        raise HTTPException(status_code=400, detail=f"Unknown NEXUS domain: {request.domain}")
+    try:
+        return {"response": run_domain_action(request.domain, request.action)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        print("\\n========== DOMAIN ACTION ERROR ==========")
+        print("Error type:", type(exc).__name__)
+        print("Error:", str(exc))
+        print("=========================================\\n")
+        raise HTTPException(status_code=500, detail=f"Domain action failed: {str(exc)}")
