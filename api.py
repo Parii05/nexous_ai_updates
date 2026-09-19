@@ -1,10 +1,13 @@
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import tempfile
 import os
 
 from Agents.orchestrator import orchestrator_agent
 from Agents.ingestion import ingestion_agent
+from Agents.domain_config import DOMAIN_REGISTRY
+from rag import list_document_records
 
 
 # =========================================================
@@ -133,10 +136,7 @@ async def upload_document(
     # -----------------------------------------------------
 
     if not file.filename:
-
-        return {
-            "detail": "No file provided."
-        }
+        raise HTTPException(status_code=400, detail="No file provided.")
 
 
     # -----------------------------------------------------
@@ -150,12 +150,16 @@ async def upload_document(
     supported_extensions = {".pdf", ".txt", ".docx", ".png", ".jpg", ".jpeg", ".webp"}
 
     if extension not in supported_extensions:
-        return {
-            "detail": (
+        raise HTTPException(
+            status_code=400,
+            detail=(
                 "Unsupported file type. Supported: PDF, TXT, DOCX, "
-                "PNG, JPG, JPEG and WEBP."
-            )
-        }
+                "PNG, JPG, JPEG and WEBP. Legacy .doc files are not supported."
+            ),
+        )
+
+    if domain and domain not in DOMAIN_REGISTRY:
+        raise HTTPException(status_code=400, detail=f"Unknown NEXUS domain: {domain}")
 
 
     temp_path = None
@@ -194,7 +198,6 @@ async def upload_document(
         # -------------------------------------------------
 
         if result.get("success"):
-
             return {
                 "message": "Document successfully indexed.",
                 "filename": file.filename,
@@ -202,6 +205,11 @@ async def upload_document(
                 "status": "indexed",
                 "domain": domain or "General",
                 "ocr": extension in {".png", ".jpg", ".jpeg", ".webp"},
+                "document_id": result.get("document_id"),
+                "chunk_count": result.get("chunk_count", 0),
+                "lifecycle": ["Uploading", "Processing"] +
+                    (["OCR"] if result.get("ocr") else []) +
+                    ["Embedding", "Indexed", "Ready"],
             }
 
 
@@ -210,16 +218,16 @@ async def upload_document(
         # -------------------------------------------------
 
         else:
-
-            return {
-                "detail": result.get(
-                    "message",
-                    "Document ingestion failed.",
-                ),
-                "filename": file.filename,
-                "agent": "ingestion",
-                "status": "failed",
-            }
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "detail": result.get("message", "Document ingestion failed."),
+                    "filename": file.filename,
+                    "agent": "ingestion",
+                    "status": "failed",
+                    "domain": domain or "General",
+                },
+            )
 
 
     # -----------------------------------------------------
@@ -256,3 +264,30 @@ async def upload_document(
             except OSError:
 
                 pass
+
+
+# =========================================================
+# DOCUMENT LIBRARY
+# =========================================================
+
+@app.get("/documents")
+def documents(domain: str | None = None):
+    if domain and domain not in DOMAIN_REGISTRY:
+        raise HTTPException(status_code=400, detail=f"Unknown NEXUS domain: {domain}")
+
+    try:
+        records = list_document_records(domain=domain)
+        return {
+            "documents": records,
+            "domain": domain or "General",
+            "count": len(records),
+        }
+    except Exception as e:
+        print("\n========== DOCUMENT LIBRARY ERROR ==========")
+        print("Error type:", type(e).__name__)
+        print("Error:", str(e))
+        print("============================================\n")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unable to load document library: {str(e)}",
+        )
