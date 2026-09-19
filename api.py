@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Form
 from pydantic import BaseModel
 import tempfile
 import os
@@ -124,7 +124,8 @@ def ask_nexus(request: QueryRequest):
 
 @app.post("/upload")
 async def upload_document(
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    domain: str | None = Form(default=None),
 ):
 
     # -----------------------------------------------------
@@ -146,10 +147,14 @@ async def upload_document(
         file.filename
     )[1].lower()
 
-    if extension != ".pdf":
+    supported_extensions = {".pdf", ".txt", ".docx", ".png", ".jpg", ".jpeg", ".webp"}
 
+    if extension not in supported_extensions:
         return {
-            "detail": "Only PDF files are currently supported."
+            "detail": (
+                "Unsupported file type. Supported: PDF, TXT, DOCX, "
+                "PNG, JPG, JPEG and WEBP."
+            )
         }
 
 
@@ -164,7 +169,7 @@ async def upload_document(
 
         with tempfile.NamedTemporaryFile(
             delete=False,
-            suffix=".pdf",
+            suffix=extension,
         ) as temp_file:
 
             content = await file.read()
@@ -179,7 +184,8 @@ async def upload_document(
         # -------------------------------------------------
 
         result = ingestion_agent(
-            temp_path
+            temp_path,
+            domain=domain,
         )
 
 
@@ -194,6 +200,8 @@ async def upload_document(
                 "filename": file.filename,
                 "agent": "ingestion",
                 "status": "indexed",
+                "domain": domain or "General",
+                "ocr": extension in {".png", ".jpg", ".jpeg", ".webp"},
             }
 
 
