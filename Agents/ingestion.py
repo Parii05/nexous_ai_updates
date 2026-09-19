@@ -8,11 +8,17 @@ import os
 import tempfile
 from pathlib import Path
 
-from rag import upload_pdf
+from rag import upload_document
 
 
 SUPPORTED_EXTENSIONS = {
     ".pdf",
+    ".txt",
+    ".docx",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
 }
 
 
@@ -33,7 +39,7 @@ def validate_document(file_path: str) -> tuple[bool, str]:
         return False, "Provided path is not a file."
 
     if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
-        return False, "Only PDF documents are currently supported."
+        return False, "Supported types are PDF, TXT, DOCX, PNG, JPG, JPEG and WEBP."
 
     if path.stat().st_size == 0:
         return False, "The uploaded file is empty."
@@ -41,7 +47,7 @@ def validate_document(file_path: str) -> tuple[bool, str]:
     return True, ""
 
 
-def ingestion_agent(file_path: str) -> dict:
+def ingestion_agent(file_path: str, domain: str | None = None) -> dict:
     """
     Ingest a document into the NEXUS knowledge base.
 
@@ -61,7 +67,7 @@ def ingestion_agent(file_path: str) -> dict:
         }
 
     try:
-        upload_pdf(file_path)
+        upload_document(file_path, source_name=os.path.basename(file_path), domain=domain)
 
         return {
             "success": True,
