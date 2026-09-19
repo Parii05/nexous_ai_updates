@@ -110,7 +110,10 @@ def legal_compliance_agent(question: str, area=None) -> dict:
         f"User question:\n{question}"
     )
 
-    result = answer_question(enhanced_question)
+    result = answer_question(
+        enhanced_question,
+        domain="Legal & Compliance",
+    )
 
     result["domain"] = "Legal & Compliance"
     result["capability"] = detected_area
