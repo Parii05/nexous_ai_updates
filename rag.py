@@ -520,6 +520,10 @@ def retrieve_chunks(
         text = metadata.get("text")
 
         if text:
+            # Defense in depth: Pinecone performs the primary metadata filter,
+            # but the application also verifies the returned domain.
+            if domain and metadata.get("domain") != domain:
+                continue
             chunks.append({
                 "text": text,
                 "score": round(match.get("score", 0), 4),
