@@ -26,6 +26,7 @@ from Agents.domain_config import DOMAIN_REGISTRY
 
 API_URL = os.getenv("NEXUS_API_URL", "http://localhost:8000/ask")
 UPLOAD_URL = os.getenv("NEXUS_UPLOAD_URL", "http://localhost:8000/upload")
+DOCUMENTS_URL = os.getenv("NEXUS_DOCUMENTS_URL", "http://localhost:8000/documents")
 
 
 # =========================================================
@@ -598,6 +599,59 @@ def inject_css():
         }
 
 
+        .document-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            background-color: #11151a;
+            border: 1px solid #242a32;
+            border-radius: 10px;
+            padding: 13px 15px;
+            margin-top: 8px;
+        }
+
+        .document-icon {
+            font-size: 18px;
+            width: 28px;
+        }
+
+        .document-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .document-name {
+            color: #dfe3e8;
+            font-size: 12px;
+            font-weight: 600;
+            overflow-wrap: anywhere;
+        }
+
+        .document-meta {
+            color: #68717e;
+            font-size: 9px;
+            margin-top: 4px;
+        }
+
+        .document-status {
+            font-size: 10px;
+            font-weight: 600;
+            text-align: right;
+        }
+
+        .document-status-indexed { color: #6ee7a0; }
+        .document-status-processing { color: #d8c27a; }
+        .document-status-failed { color: #e88a8a; }
+        .document-status-unknown { color: #9da6b2; }
+
+        .document-chunks {
+            display: block;
+            color: #59626e;
+            font-size: 8px;
+            font-weight: 400;
+            margin-top: 3px;
+        }
+
         /* =====================================================
            UPLOAD
            ===================================================== */
@@ -857,7 +911,10 @@ def render_domain_upload_section(active_domain: str):
     if not index_clicked:
         return
 
-    with st.spinner("Extracting, processing and indexing..."):
+    with st.status(
+        "Uploading document...",
+        expanded=True,
+    ) as upload_status:
         try:
             response = requests.post(
                 UPLOAD_URL,
@@ -874,6 +931,11 @@ def render_domain_upload_section(active_domain: str):
 
             if response.status_code == 200:
                 data = response.json()
+                upload_status.update(
+                    label="Indexed and ready",
+                    state="complete",
+                    expanded=False,
+                )
                 st.success(
                     f"Indexed **{data.get('filename', uploaded_file.name)}** "
                     f"for **{data.get('domain', active_domain)}**."
@@ -881,6 +943,11 @@ def render_domain_upload_section(active_domain: str):
                 if data.get("ocr"):
                     st.info("OCR was used to extract text from the uploaded image.")
             else:
+                upload_status.update(
+                    label="Indexing failed",
+                    state="error",
+                    expanded=True,
+                )
                 try:
                     detail = response.json().get("detail", "Unknown error")
                 except ValueError:
@@ -980,134 +1047,207 @@ def render_metrics():
 # ASK + RESULT
 # =========================================================
 
-def render_ask_and_result(active_domain: str):
-
-    st.markdown('<div class="section-label">NEXUS INTELLIGENCE</div>', unsafe_allow_html=True)
-    st.markdown('<div class="ask-title">What do you need to understand?</div>', unsafe_allow_html=True)
+def render_document_library(active_domain: str):
+    """Render the persisted Pinecone-backed document library for one domain."""
+    st.markdown('<div class="section-label">DOCUMENT LIBRARY</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="ask-description">'
-        'Ask across your authorized company knowledge, '
-        'systems and connected tools.'
-        '</div>',
+        f'<div class="ask-title">{active_domain.upper()} DOCUMENTS</div>',
         unsafe_allow_html=True,
     )
 
-    query = st.text_input(
-        "Ask NEXUS",
-        placeholder="Ask NEXUS anything...",
-        label_visibility="collapsed",
-        key=f"query_{active_domain}",
-    )
-
-    ask = st.button("Ask NEXUS", type="primary", key=f"ask_btn_{active_domain}")
-
-    if ask:
-
-        if not query.strip():
-            st.warning("Enter a question first.")
-
-        else:
-
-            with st.spinner("NEXUS is routing your question..."):
-
-                try:
-                    payload = {
-                        "query": query,
-                        "domain": None if active_domain == "All Domains" else active_domain,
-                        "capability": st.session_state.selected_capability,
-                    }
-
-                    response = requests.post(API_URL, json=payload, timeout=60)
-
-                except requests.exceptions.ConnectionError:
-                    st.error(f"Cannot connect to {API_URL}. Make sure FastAPI is running.")
-
-                except requests.exceptions.Timeout:
-                    st.error("The request timed out.")
-
-                except requests.exceptions.RequestException as e:
-                    st.error(f"Request failed: {e}")
-
-                else:
-
-                    if response.status_code == 200:
-
-                        data = response.json()
-                        result = data.get("response", data)
-
-                        st.session_state.last_response = result
-                        st.session_state.last_responses[active_domain] = result
-                        st.session_state.messages.append(
-                            {"question": query, "response": result}
-                        )
-
-                    else:
-
-                        try:
-                            detail = response.json().get("detail", "No detail provided.")
-                        except ValueError:
-                            detail = "No response body."
-
-                        st.error(f"Backend returned {response.status_code}: {detail}")
-
-    # -----------------------------------------------------
-    # RESULT
-    # -----------------------------------------------------
-
-    result = st.session_state.last_responses.get(active_domain)
-
-    if not result:
+    try:
+        response = requests.get(
+            DOCUMENTS_URL,
+            params={"domain": active_domain},
+            timeout=30,
+        )
+    except requests.exceptions.ConnectionError:
+        st.info("Document library is unavailable because the NEXUS backend is offline.")
+        return
+    except requests.exceptions.Timeout:
+        st.warning("Document library request timed out.")
+        return
+    except requests.exceptions.RequestException as exc:
+        st.error(f"Document library failed: {exc}")
         return
 
-    st.markdown('<div class="section-label">NEXUS RESPONSE</div>', unsafe_allow_html=True)
+    if response.status_code != 200:
+        try:
+            detail = response.json().get("detail", "Unknown error")
+        except ValueError:
+            detail = "Unknown error"
+        st.error(f"Could not load document library: {detail}")
+        return
 
-    domain = result.get("domain", active_domain)
-    capability = result.get("capability")
-    answer = result.get("answer", "No answer returned.")
-    path = result.get("path", "unknown")
+    records = response.json().get("documents", [])
 
-    agent_label = domain
-    if capability:
-        agent_label += f" · {capability}"
+    if not records:
+        st.markdown(
+            '<div class="activity-card"><div class="activity-row">'
+            '<div class="activity-name">No documents indexed yet</div>'
+            '<div class="activity-meta">Upload a PDF, TXT, DOCX or image to build this domain knowledge base.</div>'
+            '</div></div>',
+            unsafe_allow_html=True,
+        )
+        return
 
+    for record in records:
+        filename = record.get("filename", "Unknown")
+        domain = record.get("domain", active_domain)
+        file_type = str(record.get("file_type", "unknown")).upper()
+        status = str(record.get("status", "unknown")).lower()
+        ocr = record.get("ocr", False)
+        indexed = record.get("indexed", False)
+        created_at = record.get("created_at") or "Unknown time"
+        chunks = record.get("chunk_count", 0)
+
+        status_label = {
+            "indexed": "Indexed",
+            "processing": "Processing",
+            "failed": "Failed",
+        }.get(status, status.title())
+
+        icon = "🖼️" if ocr else "📄"
+        ocr_label = " · OCR" if ocr else ""
+        indexed_label = " · Ready" if indexed and status == "indexed" else ""
+
+        st.markdown(
+            f'<div class="document-row">'
+            f'<div class="document-icon">{icon}</div>'
+            f'<div class="document-info">'
+            f'<div class="document-name">{filename}</div>'
+            f'<div class="document-meta">{domain} · {file_type}{ocr_label} · {created_at}</div>'
+            f'</div>'
+            f'<div class="document-status document-status-{status}">{status_label}{indexed_label}'
+            f'<span class="document-chunks">{chunks} chunks</span></div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        if status == "failed" and record.get("error"):
+            st.caption(f"Failure: {record['error']}")
+
+
+def _render_chat_message(item: dict):
+    question = item.get("question", "")
+    response = item.get("response", {})
+    answer = response.get("answer", "No answer returned.")
+    citations = response.get("citations") or []
+    confidence = response.get("confidence")
+
+    with st.chat_message("user"):
+        st.markdown(question)
+
+    with st.chat_message("assistant"):
+        st.markdown(answer)
+
+        if citations:
+            st.caption("Sources")
+            for citation in citations:
+                source = citation.get("source", "Unknown source")
+                page = citation.get("page_number")
+                label = f"{source} · p.{page}" if page else source
+                st.markdown(f"- {label}")
+
+        if confidence is not None:
+            try:
+                st.caption(f"Confidence {float(confidence):.2f}")
+            except (ValueError, TypeError):
+                pass
+
+
+def render_ask_and_result(active_domain: str):
+    """Render a persistent, domain-scoped conversation using the existing /ask API."""
+    st.markdown('<div class="section-label">NEXUS INTELLIGENCE</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="result-card">'
-        f'<div class="result-agent">{agent_label} · {path}</div>'
-        f'<div class="result-answer">{answer}</div>'
+        '<div class="ask-title">What do you need to understand?</div>'
+        '<div class="ask-description">'
+        'Ask follow-up questions while staying inside this domain knowledge boundary.'
         '</div>',
         unsafe_allow_html=True,
     )
 
-    # Citations
-    citations = result.get("citations") or []
+    # Only replay messages belonging to the current domain.
+    domain_messages = [
+        item for item in st.session_state.messages
+        if item.get("domain") == active_domain
+    ]
 
-    if citations:
+    for item in domain_messages:
+        _render_chat_message(item)
 
-        st.markdown('<div class="section-label">SOURCES</div>', unsafe_allow_html=True)
+    query = st.chat_input(
+        f"Ask the {active_domain} agent...",
+        key=f"chat_input_{active_domain}",
+    )
 
-        citation_html = ""
-        for citation in citations:
-            source = citation.get("source", "Unknown source")
-            page = citation.get("page_number")
-            label = source
-            if page:
-                label += f" · p.{page}"
-            citation_html += f'<span class="citation">📄 {label}</span>'
+    if not query:
+        return
 
-        st.markdown(citation_html, unsafe_allow_html=True)
+    if not query.strip():
+        st.warning("Enter a question first.")
+        return
 
-    # Confidence
-    confidence = result.get("confidence")
+    with st.chat_message("user"):
+        st.markdown(query)
 
-    if confidence is not None:
-        try:
-            confidence_value = float(confidence)
-            st.markdown(
-                f'<span class="confidence">✓ Confidence {confidence_value:.2f}</span>',
-                unsafe_allow_html=True,
-            )
-        except (ValueError, TypeError):
-            pass
+    with st.chat_message("assistant"):
+        with st.spinner("NEXUS is routing, retrieving and grounding the answer..."):
+            try:
+                payload = {
+                    "query": query,
+                    "domain": None if active_domain == "All Domains" else active_domain,
+                    "capability": st.session_state.selected_capability,
+                }
+
+                response = requests.post(API_URL, json=payload, timeout=60)
+
+                if response.status_code != 200:
+                    try:
+                        detail = response.json().get("detail", "No detail provided.")
+                    except ValueError:
+                        detail = "No response body."
+                    st.error(f"Backend returned {response.status_code}: {detail}")
+                    return
+
+                data = response.json()
+                result = data.get("response", data)
+                result_domain = result.get("domain", active_domain)
+
+                st.session_state.last_response = result
+                st.session_state.last_responses[active_domain] = result
+                st.session_state.messages.append({
+                    "question": query,
+                    "response": result,
+                    "domain": result_domain,
+                })
+
+                st.markdown(result.get("answer", "No answer returned."))
+
+                citations = result.get("citations") or []
+                if citations:
+                    st.caption("Sources")
+                    for citation in citations:
+                        source = citation.get("source", "Unknown source")
+                        page = citation.get("page_number")
+                        label = f"{source} · p.{page}" if page else source
+                        st.markdown(f"- {label}")
+
+                confidence = result.get("confidence")
+                if confidence is not None:
+                    try:
+                        st.caption(f"Confidence {float(confidence):.2f}")
+                    except (ValueError, TypeError):
+                        pass
+
+            except requests.exceptions.ConnectionError:
+                st.error(f"Cannot connect to {API_URL}. Make sure FastAPI is running.")
+            except requests.exceptions.Timeout:
+                st.error("The request timed out.")
+            except requests.exceptions.RequestException as exc:
+                st.error(f"Request failed: {exc}")
+
+
 
 
 # =========================================================
@@ -1197,4 +1337,5 @@ def render_domain_workspace(domain: str):
     render_header(domain)
     render_metrics()
     render_domain_upload_section(domain)
+    render_document_library(domain)
     render_ask_and_result(domain)
