@@ -47,7 +47,11 @@ def validate_document(file_path: str) -> tuple[bool, str]:
     return True, ""
 
 
-def ingestion_agent(file_path: str, domain: str | None = None) -> dict:
+def ingestion_agent(
+    file_path: str,
+    domain: str | None = None,
+    source_name: str | None = None,
+) -> dict:
     """
     Ingest a document into the NEXUS knowledge base.
 
@@ -69,7 +73,7 @@ def ingestion_agent(file_path: str, domain: str | None = None) -> dict:
     try:
         result = upload_document(
             file_path,
-            source_name=os.path.basename(file_path),
+            source_name=source_name or os.path.basename(file_path),
             domain=domain,
         )
 
