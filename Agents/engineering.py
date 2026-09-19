@@ -317,7 +317,8 @@ User question:
     # -----------------------------------------------------
 
     result = answer_question(
-        enhanced_question.strip()
+        enhanced_question.strip(),
+        domain="Engineering",
     )
 
 
