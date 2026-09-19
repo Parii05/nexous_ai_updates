@@ -74,6 +74,9 @@ def init_session_state():
     if "last_response" not in st.session_state:
         st.session_state.last_response = None
 
+    if "last_responses" not in st.session_state:
+        st.session_state.last_responses = {}
+
 
 # =========================================================
 # GLOBAL CSS  (identical theme on every page)
@@ -1033,6 +1036,7 @@ def render_ask_and_result(active_domain: str):
                         result = data.get("response", data)
 
                         st.session_state.last_response = result
+                        st.session_state.last_responses[active_domain] = result
                         st.session_state.messages.append(
                             {"question": query, "response": result}
                         )
@@ -1050,7 +1054,7 @@ def render_ask_and_result(active_domain: str):
     # RESULT
     # -----------------------------------------------------
 
-    result = st.session_state.last_response
+    result = st.session_state.last_responses.get(active_domain)
 
     if not result:
         return
