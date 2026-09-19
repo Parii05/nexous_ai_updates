@@ -27,6 +27,7 @@ from Agents.domain_config import DOMAIN_REGISTRY
 API_URL = os.getenv("NEXUS_API_URL", "http://localhost:8000/ask")
 UPLOAD_URL = os.getenv("NEXUS_UPLOAD_URL", "http://localhost:8000/upload")
 DOCUMENTS_URL = os.getenv("NEXUS_DOCUMENTS_URL", "http://localhost:8000/documents")
+ACTION_URL = os.getenv("NEXUS_ACTION_URL", "http://localhost:8000/domain-action")
 
 
 # =========================================================
@@ -77,6 +78,9 @@ def init_session_state():
 
     if "last_responses" not in st.session_state:
         st.session_state.last_responses = {}
+
+    if "domain_action_results" not in st.session_state:
+        st.session_state.domain_action_results = {}
 
 
 # =========================================================
@@ -968,6 +972,53 @@ def render_domain_upload_section(active_domain: str):
 
 
 # =========================================================
+# DOMAIN INTELLIGENCE QUICK ACTIONS
+# =========================================================
+
+def render_domain_quick_actions(active_domain: str):
+    actions = DOMAIN_REGISTRY.get(active_domain, {}).get("quick_actions", [])
+    if not actions:
+        return
+    st.markdown('<div class="section-label">DOMAIN INTELLIGENCE</div>', unsafe_allow_html=True)
+    st.markdown('<div class="ask-title">Quick Actions</div><div class="ask-description">Run a grounded workflow over documents indexed for this domain.</div>', unsafe_allow_html=True)
+    columns = st.columns(min(3, len(actions)))
+    for index, (label, description) in enumerate(actions):
+        with columns[index % len(columns)]:
+            st.markdown(f'<div class="quick-card"><div class="quick-icon">◇</div><div class="quick-name">{label}</div><div class="quick-description">{description}</div></div>', unsafe_allow_html=True)
+            if st.button("Run →", key=f"action_{active_domain}_{label}", use_container_width=True):
+                with st.spinner(f"Running {label}..."):
+                    try:
+                        response = requests.post(ACTION_URL, json={"domain": active_domain, "action": label}, timeout=120)
+                        if response.status_code != 200:
+                            try: detail = response.json().get("detail", "Unknown error")
+                            except ValueError: detail = "Unknown error"
+                            st.error(f"Action failed: {detail}")
+                        else:
+                            st.session_state.domain_action_results[active_domain] = response.json().get("response", {})
+                            st.rerun()
+                    except requests.exceptions.ConnectionError: st.error("Cannot connect to NEXUS backend.")
+                    except requests.exceptions.Timeout: st.error("The intelligence action timed out.")
+                    except requests.exceptions.RequestException as exc: st.error(f"Action failed: {exc}")
+    result = st.session_state.domain_action_results.get(active_domain)
+    if result:
+        st.markdown('<div class="result-card">', unsafe_allow_html=True)
+        st.markdown(f'<div class="result-agent">{result.get("action", "Domain Intelligence")} · grounded result</div>', unsafe_allow_html=True)
+        st.markdown(result.get("answer", "No result returned."))
+        citations = result.get("citations") or []
+        if citations:
+            st.caption("Sources")
+            for citation in citations:
+                source = citation.get("source", "Unknown source")
+                page = citation.get("page_number")
+                st.markdown(f"- {source} · p.{page}" if page else f"- {source}")
+        confidence = result.get("confidence")
+        if confidence is not None:
+            try: st.caption(f"Confidence {float(confidence):.2f}")
+            except (ValueError, TypeError): pass
+        st.markdown('</div>', unsafe_allow_html=True)
+
+
+# =========================================================
 # HEADER
 # =========================================================
 
@@ -1345,6 +1396,7 @@ def render_domain_workspace(domain: str):
     render_sidebar(domain)
     render_header(domain)
     render_metrics()
+    render_domain_quick_actions(domain)
     render_domain_upload_section(domain)
     render_document_library(domain)
     render_ask_and_result(domain)
