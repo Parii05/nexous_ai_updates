@@ -916,6 +916,11 @@ def render_domain_upload_section(active_domain: str):
         expanded=True,
     ) as upload_status:
         try:
+            upload_status.update(
+                label="Processing document...",
+                state="running",
+                expanded=True,
+            )
             response = requests.post(
                 UPLOAD_URL,
                 files={
