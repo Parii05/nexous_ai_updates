@@ -1,2 +1,15 @@
 streamlit
 requests
+fastapi
+uvicorn
+python-multipart
+pydantic
+python-dotenv
+pymupdf
+groq
+langgraph
+pinecone
+sentence-transformers
+python-docx
+Pillow
+pytesseract
