@@ -1,7 +1,11 @@
 """Reusable Phase 2 domain-intelligence actions built on the existing RAG pipeline."""
 
-from rag import answer_question
 from Agents.domain_config import DOMAIN_REGISTRY
+from Agents.engineering import engineering_agent
+from Agents.product import product_agent
+from Agents.people_hr import people_agent
+from Agents.finance import finance_agent
+from Agents.legal_compliance import legal_compliance_agent
 
 ACTION_DEFINITIONS = {
     "Engineering": {
@@ -45,7 +49,21 @@ def run_domain_action(domain: str, action: str) -> dict:
         raise ValueError(f"Unsupported action for {domain}: {action}")
     instruction = ACTION_DEFINITIONS[domain][action]
     prompt = f"""You are the NEXUS {domain} Intelligence Agent.\n\nACTION: {action}\n\nTASK:\n{instruction}\n\nGROUNDING RULES:\n- Use ONLY retrieved documents for company-specific facts.\n- Clearly separate 'Documented facts' from 'AI analysis / interpretation'.\n- If evidence is insufficient, say so explicitly.\n- Never fabricate values, clauses, requirements, dates, endpoints or decisions.\n- Preserve source attribution.\n- Return a useful structured result for the user.\n"""
-    result = answer_question(prompt, domain=domain)
+    # Reuse the existing domain agents so Phase 2 stays inside the
+    # established orchestration + RAG architecture.
+    if domain == "Engineering":
+        result = engineering_agent(prompt)
+    elif domain == "Product":
+        result = product_agent(prompt)
+    elif domain == "People / HR":
+        result = people_agent(prompt)
+    elif domain == "Finance":
+        result = finance_agent(prompt)
+    elif domain == "Legal & Compliance":
+        result = legal_compliance_agent(prompt)
+    else:
+        raise ValueError(f"Unsupported NEXUS domain: {domain}")
+
     result["domain"] = domain
     result["action"] = action
     result["action_type"] = "domain_intelligence"
