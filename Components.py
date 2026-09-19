@@ -1168,10 +1168,14 @@ def render_ask_and_result(active_domain: str):
     )
 
     # Only replay messages belonging to the current domain.
-    domain_messages = [
-        item for item in st.session_state.messages
-        if item.get("domain") == active_domain
-    ]
+    domain_messages = (
+        st.session_state.messages
+        if active_domain == "All Domains"
+        else [
+            item for item in st.session_state.messages
+            if item.get("domain") == active_domain
+        ]
+    )
 
     for item in domain_messages:
         _render_chat_message(item)
