@@ -1,4 +1,3 @@
-from dotenv import load_dotenv
 import os
 import json
 import re
@@ -7,6 +6,8 @@ from collections import Counter
 from datetime import datetime
 from typing import TypedDict
 from pathlib import Path
+
+from dotenv import dotenv_values
 import fitz
 from groq import Groq
 from langgraph.graph import StateGraph, END
@@ -16,22 +17,20 @@ from sentence_transformers import SentenceTransformer
 # ---------------------------------------------------------------------
 # 1. CONFIG
 # ---------------------------------------------------------------------
-load_dotenv() 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+_env_values = dotenv_values(Path(__file__).resolve().parent / ".env")
+for key, value in (_env_values or {}).items():
+    if value is not None and key not in os.environ:
+        os.environ[key] = value
 
-if not GROQ_API_KEY:
-    raise ValueError("Missing GROQ_API_KEY environment variable")
-
-if not PINECONE_API_KEY:
-    raise ValueError("Missing PINECONE_API_KEY environment variable")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY") or ""
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY") or ""
 
 INDEX_NAME = "rag-index-euclidean"
 
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 EMBED_DIM = 384
 
-GROQ_MODEL = GROQ_MODEL = "qwen/qwen3.6-27b"
+GROQ_MODEL = "qwen/qwen3.8-27b"
 
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 50
@@ -68,23 +67,60 @@ class RAGState(TypedDict, total=False):
 # 2. INIT CLIENTS
 # ---------------------------------------------------------------------
 
-embedder = SentenceTransformer(EMBED_MODEL)
-groq_client = Groq(api_key=GROQ_API_KEY)
+embedder = None
+groq_client = None
+pc = None
+index = None
 
-pc = Pinecone(api_key=PINECONE_API_KEY)
 
-existing = [i.name for i in pc.list_indexes()]
+def _as_vector_list(vector):
+    """Normalize embedding vectors from NumPy arrays or plain Python sequences."""
+    if hasattr(vector, "tolist"):
+        return vector.tolist()
+    return list(vector)
 
-if INDEX_NAME not in existing:
-    pc.create_index(
-        name=INDEX_NAME,
-        dimension=EMBED_DIM,
-        metric="euclidean",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-    )
-    print(f"[+] Created Pinecone index: {INDEX_NAME}")
 
-index = pc.Index(INDEX_NAME)
+def get_embedder():
+    """Lazily initialize the sentence embedding model when it is actually needed."""
+    global embedder
+    if embedder is None:
+        embedder = SentenceTransformer(EMBED_MODEL)
+    return embedder
+
+
+def get_groq_client():
+    """Return the Groq client, raising only when an actual API call requires it."""
+    global groq_client
+    if groq_client is None:
+        if not GROQ_API_KEY:
+            raise ValueError("Missing GROQ_API_KEY environment variable")
+        groq_client = Groq(api_key=GROQ_API_KEY)
+    return groq_client
+
+
+def get_pinecone_index():
+    """Create or fetch the configured Pinecone index on demand."""
+    global pc, index
+    if index is not None:
+        return index
+
+    if not PINECONE_API_KEY:
+        raise ValueError("Missing PINECONE_API_KEY environment variable")
+
+    pc = Pinecone(api_key=PINECONE_API_KEY)
+    existing = [i.name for i in pc.list_indexes()]
+
+    if INDEX_NAME not in existing:
+        pc.create_index(
+            name=INDEX_NAME,
+            dimension=EMBED_DIM,
+            metric="euclidean",
+            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+        )
+        print(f"[+] Created Pinecone index: {INDEX_NAME}")
+
+    index = pc.Index(INDEX_NAME)
+    return index
 
 # ---------------------------------------------------------------------
 # 3. PDF TO TEXT CHUNKS
@@ -146,7 +182,7 @@ def _index_text(
     if not chunks:
         raise ValueError("No readable text could be extracted from the document.")
 
-    embeddings = embedder.encode(chunks, show_progress_bar=True)
+    embeddings = get_embedder().encode(chunks, show_progress_bar=True)
     normalized_domain = domain or "General"
     now = datetime.utcnow().isoformat()
 
@@ -168,13 +204,13 @@ def _index_text(
     ]
 
     for i in range(0, len(vectors), 100):
-        index.upsert(vectors=vectors[i:i + 100], namespace=DOC_NAMESPACE)
+        get_pinecone_index().upsert(vectors=vectors[i:i + 100], namespace=DOC_NAMESPACE)
 
     # One registry record per uploaded document. It lives in the same
     # Pinecone namespace, but retrieval explicitly filters to document_chunk.
     registry_id = f"document-{document_id or uuid.uuid4()}"
     registry_vector = embeddings.mean(axis=0).tolist()
-    index.upsert(
+    get_pinecone_index().upsert(
         vectors=[(
             registry_id,
             registry_vector,
@@ -244,7 +280,7 @@ def upload_document(
     # Create a processing record before extraction so the library can expose
     # failures as well as successful documents.
     registry_id = f"document-{document_id}"
-    registry_embedding = embedder.encode([source])[0].tolist()
+    registry_embedding = get_embedder().encode([source])[0].tolist()
     base_metadata = {
         "filename": source,
         "source": source,
@@ -257,7 +293,7 @@ def upload_document(
         "document_id": document_id,
         "created_at": now,
     }
-    index.upsert(
+    get_pinecone_index().upsert(
         vectors=[(registry_id, registry_embedding, base_metadata)],
         namespace=DOC_NAMESPACE,
     )
@@ -301,7 +337,7 @@ def upload_document(
             "chunk_count": chunk_count,
             "updated_at": datetime.utcnow().isoformat(),
         })
-        index.upsert(
+        get_pinecone_index().upsert(
             vectors=[(registry_id, registry_embedding, indexed_metadata)],
             namespace=DOC_NAMESPACE,
         )
@@ -322,7 +358,7 @@ def upload_document(
             "error": str(exc),
             "updated_at": datetime.utcnow().isoformat(),
         })
-        index.upsert(
+        get_pinecone_index().upsert(
             vectors=[(registry_id, registry_embedding, failed_metadata)],
             namespace=DOC_NAMESPACE,
         )
@@ -332,8 +368,10 @@ def list_document_records(domain: str | None = None) -> list[dict]:
     """Return persisted document registry records from the existing Pinecone index."""
     ids = []
 
+    pinecone_index = get_pinecone_index()
+
     try:
-        listed = index.list(namespace=DOC_NAMESPACE, prefix="document-")
+        listed = pinecone_index.list(namespace=DOC_NAMESPACE, prefix="document-")
         for batch in listed:
             if isinstance(batch, dict):
                 batch_ids = batch.get("ids", [])
@@ -341,7 +379,7 @@ def list_document_records(domain: str | None = None) -> list[dict]:
                 batch_ids = getattr(batch, "ids", None) or []
             ids.extend(batch_ids)
     except TypeError:
-        listed = index.list(namespace=DOC_NAMESPACE)
+        listed = pinecone_index.list(namespace=DOC_NAMESPACE)
         for batch in listed:
             batch_ids = batch.get("ids", []) if isinstance(batch, dict) else (getattr(batch, "ids", None) or [])
             ids.extend([item for item in batch_ids if str(item).startswith("document-")])
@@ -351,7 +389,7 @@ def list_document_records(domain: str | None = None) -> list[dict]:
 
     records = []
     for start in range(0, len(ids), 100):
-        fetched = index.fetch(ids=ids[start:start + 100], namespace=DOC_NAMESPACE)
+        fetched = pinecone_index.fetch(ids=ids[start:start + 100], namespace=DOC_NAMESPACE)
         vectors = fetched.get("vectors", {}) if isinstance(fetched, dict) else getattr(fetched, "vectors", {}) or {}
 
         iterable = vectors.items() if hasattr(vectors, "items") else []
@@ -401,7 +439,7 @@ def decompose_query(question: str) -> list[str]:
         "1. <the original question>"
     )
 
-    response = groq_client.chat.completions.create(
+    response = get_groq_client().chat.completions.create(
         model=GROQ_MODEL,
         messages=[
             {"role": "system", "content": system_prompt},
@@ -493,7 +531,7 @@ def retrieve_chunks(
     Retrieves document chunks from the document namespace.
     """
 
-    q_vec = embedder.encode([query])[0].tolist()
+    q_vec = _as_vector_list(get_embedder().encode([query])[0])
 
     query_kwargs = {
         "vector": q_vec,
@@ -511,7 +549,7 @@ def retrieve_chunks(
             ]
         }
 
-    results = index.query(**query_kwargs)
+    results = get_pinecone_index().query(**query_kwargs)
 
     chunks = []
 
@@ -575,9 +613,9 @@ def retrieve_memories(question: str, top_k: int = MEMORY_TOP_K) -> list[dict]:
     Retrieves previously stored important context relevant to the question.
     """
 
-    q_vec = embedder.encode([question])[0].tolist()
+    q_vec = _as_vector_list(get_embedder().encode([question])[0])
 
-    results = index.query(
+    results = get_pinecone_index().query(
         vector=q_vec,
         top_k=RERANK_CANDIDATE_K,
         include_metadata=True,
@@ -650,7 +688,7 @@ Assistant answer:
 {answer}
 Extract only important context worth storing.
 """
-    response = groq_client.chat.completions.create(
+    response = get_groq_client().chat.completions.create(
         model=GROQ_MODEL,
         messages=[
             {"role": "system", "content": system_prompt},
@@ -697,9 +735,9 @@ def memory_already_exists(memory_text: str) -> bool:
     Prevents storing near-duplicate memories.
     """
 
-    q_vec = embedder.encode([memory_text])[0].tolist()
+    q_vec = _as_vector_list(get_embedder().encode([memory_text])[0])
 
-    results = index.query(
+    results = get_pinecone_index().query(
         vector=q_vec,
         top_k=1,
         include_metadata=True,
@@ -736,7 +774,7 @@ def store_memories(memories: list[dict]):
         return
 
     texts = [m["text"] for m in new_memories]
-    embeddings = embedder.encode(texts)
+    embeddings = get_embedder().encode(texts)
 
     now = datetime.utcnow().isoformat()
 
@@ -757,7 +795,7 @@ def store_memories(memories: list[dict]):
             },
         ))
 
-    index.upsert(
+    get_pinecone_index().upsert(
         vectors=vectors,
         namespace=MEMORY_NAMESPACE,
     )
@@ -828,7 +866,7 @@ def direct_answer_node(state: RAGState) -> RAGState:
     """Node: answer directly without document retrieval if retrieval is not needed."""
 
     question = state.get("question", "")
-    response = groq_client.chat.completions.create(
+    response = get_groq_client().chat.completions.create(
         model=GROQ_MODEL,
         messages=[
             {"role": "system", "content": "You are a helpful assistant. Answer the user's question directly."},
@@ -887,7 +925,7 @@ Question:
 {question}
 """
 
-    response = groq_client.chat.completions.create(
+    response = get_groq_client().chat.completions.create(
         model=GROQ_MODEL,
         messages=[
             {"role": "system", "content": system_prompt},

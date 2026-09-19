@@ -37,11 +37,11 @@ DASHBOARD_URL = os.getenv("NEXUS_DASHBOARD_URL", "http://localhost:8000/domain-d
 # =========================================================
 
 DOMAIN_ICONS = {
-    "Engineering": "⌘",
-    "Product": "◇",
-    "People / HR": "♙",
-    "Finance": "◈",
-    "Legal & Compliance": "§",
+    "Engineering": "⚙️",
+    "Product": "🧩",
+    "People / HR": "👥",
+    "Finance": "💰",
+    "Legal & Compliance": "⚖️",
 }
 
 DOMAIN_PAGES = {
@@ -783,7 +783,7 @@ def render_sidebar(active_domain: str):
 
         st.markdown('<div class="sidebar-title">Domain Agents</div>', unsafe_allow_html=True)
 
-        st.page_link("app.py", label="All Domains", icon="▦")
+        st.page_link("app.py", label="All Domains", icon="🧭")
 
         for domain, page_path in DOMAIN_PAGES.items():
             st.page_link(page_path, label=domain, icon=DOMAIN_ICONS[domain])
@@ -1175,6 +1175,104 @@ def render_metrics():
 # =========================================================
 # ASK + RESULT
 # =========================================================
+
+def render_domain_dashboard(active_domain: str):
+    """Render the domain intelligence dashboard for a given domain."""
+    st.markdown('<div class="section-label">AI INSIGHTS DASHBOARD</div>', unsafe_allow_html=True)
+
+    result = st.session_state.domain_dashboard_results.get(active_domain)
+
+    if result is None:
+        try:
+            response = requests.post(DASHBOARD_URL, params={"domain": active_domain}, timeout=120)
+            if response.status_code != 200:
+                try:
+                    detail = response.json().get("detail", "Unknown error")
+                except ValueError:
+                    detail = "Unknown error"
+                st.warning(f"Dashboard unavailable: {detail}")
+                return
+            result = response.json().get("dashboard", {})
+            st.session_state.domain_dashboard_results[active_domain] = result
+        except requests.exceptions.ConnectionError:
+            st.info("Dashboard is unavailable because the NEXUS backend is offline.")
+            return
+        except requests.exceptions.Timeout:
+            st.warning("Dashboard request timed out.")
+            return
+        except requests.exceptions.RequestException as exc:
+            st.error(f"Dashboard failed: {exc}")
+            return
+
+    if not result:
+        st.markdown(
+            '<div class="insights-shell"><div class="insight-unavailable">No dashboard data is available for this domain yet.</div></div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    title = result.get("title") or f"{active_domain} AI Insights"
+    st.markdown(f'<div class="ask-title">{title}</div>', unsafe_allow_html=True)
+
+    status = result.get("document_status", "unavailable")
+    st.markdown(
+        f'<div class="insights-status">Document status: {status}</div>',
+        unsafe_allow_html=True,
+    )
+
+    sections = result.get("sections") or {}
+    if sections:
+        column_count = 2
+        columns = st.columns(column_count)
+
+        for idx, (name, payload) in enumerate(sections.items()):
+            items = payload.get("items", []) if isinstance(payload, dict) else []
+            section_status = payload.get("status", "unavailable") if isinstance(payload, dict) else "unavailable"
+            with columns[idx % column_count]:
+                st.markdown(
+                    '<div class="insight-card">'
+                    f'<div class="insight-card-title">{name}</div>'
+                    f'<div class="insight-badge">{section_status}</div>'
+                    + (
+                        "".join(f'<div class="insight-item">• {item}</div>' for item in items)
+                        if items
+                        else '<div class="insight-unavailable">No evidence available for this section.</div>'
+                    )
+                    + '</div>',
+                    unsafe_allow_html=True,
+                )
+
+    documented_facts = result.get("documented_facts") or []
+    ai_insights = result.get("ai_insights") or []
+    recommendations = result.get("recommendations") or []
+
+    if documented_facts or ai_insights or recommendations:
+        fact_col, insight_col, rec_col = st.columns(3)
+
+        with fact_col:
+            st.markdown('<div class="insight-card"><div class="insight-card-title">Documented Facts</div></div>', unsafe_allow_html=True)
+            if documented_facts:
+                for fact in documented_facts:
+                    st.markdown(f'<div class="insight-item">• {fact}</div>', unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="insight-unavailable">No documented facts available.</div>', unsafe_allow_html=True)
+
+        with insight_col:
+            st.markdown('<div class="insight-card"><div class="insight-card-title">AI Insights</div></div>', unsafe_allow_html=True)
+            if ai_insights:
+                for insight in ai_insights:
+                    st.markdown(f'<div class="insight-item">• {insight}</div>', unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="insight-unavailable">No AI insights available.</div>', unsafe_allow_html=True)
+
+        with rec_col:
+            st.markdown('<div class="insight-card"><div class="insight-card-title">Recommendations</div></div>', unsafe_allow_html=True)
+            if recommendations:
+                for recommendation in recommendations:
+                    st.markdown(f'<div class="insight-item">• {recommendation}</div>', unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="insight-unavailable">No recommendations available.</div>', unsafe_allow_html=True)
+
 
 def render_document_library(active_domain: str):
     """Render the persisted Pinecone-backed document library for one domain."""

@@ -69,20 +69,42 @@ def _extract_json(text: str) -> dict | None:
     if not text:
         return None
     cleaned = text.strip()
-    cleaned = re.sub(r"^\\s*json\\s*", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\\s*$", "", cleaned)
+    cleaned = re.sub(r"^\s*```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```\s*$", "", cleaned)
     try:
         data = json.loads(cleaned)
         return data if isinstance(data, dict) else None
     except json.JSONDecodeError:
-        match = re.search(r"\\{.*\\}", cleaned, flags=re.DOTALL)
-        if not match:
-            return None
-        try:
-            data = json.loads(match.group(0))
+        decoder = json.JSONDecoder()
+        for start, character in enumerate(cleaned):
+            if character != "{":
+                continue
+            try:
+                data, _ = decoder.raw_decode(cleaned[start:])
+            except json.JSONDecodeError:
+                continue
             return data if isinstance(data, dict) else None
-        except json.JSONDecodeError:
-            return None
+        return None
+
+
+def _normalize_dashboard_payload(payload: dict, definition: dict, has_citations: bool) -> dict:
+    """Normalize section-first model output to the dashboard response schema."""
+    normalized = dict(payload)
+    sections = normalized.get("sections")
+
+    if not isinstance(sections, dict):
+        sections = {
+            name: normalized.pop(name)
+            for name in definition["sections"]
+            if name in normalized
+        }
+
+    normalized["sections"] = sections
+    normalized.setdefault("document_status", "available" if has_citations else "unavailable")
+    normalized.setdefault("documented_facts", [])
+    normalized.setdefault("ai_insights", [])
+    normalized.setdefault("recommendations", [])
+    return normalized
 
 
 def run_domain_dashboard(domain: str) -> dict:
@@ -142,6 +164,8 @@ def run_domain_dashboard(domain: str) -> dict:
             "ai_insights": [answer] if answer else [],
             "recommendations": [],
         }
+    else:
+        parsed = _normalize_dashboard_payload(parsed, definition, bool(result.get("citations")))
 
     parsed["domain"] = domain
     parsed["title"] = definition["title"]

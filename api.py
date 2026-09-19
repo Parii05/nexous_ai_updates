@@ -3,6 +3,14 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import tempfile
 import os
+from pathlib import Path
+
+from dotenv import dotenv_values
+
+_env_values = dotenv_values(Path(__file__).resolve().parent / ".env")
+for key, value in (_env_values or {}).items():
+    if value is not None and key not in os.environ:
+        os.environ[key] = value
 
 from Agents.orchestrator import orchestrator_agent
 from Agents.ingestion import ingestion_agent
