@@ -773,7 +773,10 @@ def router_node(state: RAGState) -> RAGState:
         state["error"] = "No question provided"
         return state
 
-    needs_retrieval = any(
+    # A domain agent must always ground its answer in that domain's
+    # authorized document set. Generic/direct answers are only used when
+    # the request is not tied to a domain.
+    needs_retrieval = bool(state.get("domain")) or any(
         keyword in question.lower()
         for keyword in ["document", "pdf", "file", "context", "based on", "according to"]
     )
