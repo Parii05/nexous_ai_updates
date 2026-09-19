@@ -67,7 +67,11 @@ def ingestion_agent(file_path: str, domain: str | None = None) -> dict:
         }
 
     try:
-        upload_document(file_path, source_name=os.path.basename(file_path), domain=domain)
+        result = upload_document(
+            file_path,
+            source_name=os.path.basename(file_path),
+            domain=domain,
+        )
 
         return {
             "success": True,
@@ -75,6 +79,9 @@ def ingestion_agent(file_path: str, domain: str | None = None) -> dict:
             "status": "indexed",
             "message": "Document successfully indexed.",
             "filename": os.path.basename(file_path),
+            "document_id": result.get("document_id"),
+            "chunk_count": result.get("chunk_count", 0),
+            "ocr": result.get("ocr", False),
         }
 
     except Exception as exc:
