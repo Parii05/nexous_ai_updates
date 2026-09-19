@@ -772,7 +772,7 @@ def render_upload_widget(active_domain: str):
                     "file": (
                         uploaded_file.name,
                         uploaded_file.getvalue(),
-                        "application/pdf",
+                        uploaded_file.type or "application/octet-stream",
                     )
                 }
 
