@@ -110,7 +110,10 @@ def product_agent(question: str, area=None) -> dict:
         f"User question:\n{question}"
     )
 
-    result = answer_question(enhanced_question)
+    result = answer_question(
+        enhanced_question,
+        domain="Product",
+    )
 
     result["domain"] = "Product"
     result["capability"] = detected_area
