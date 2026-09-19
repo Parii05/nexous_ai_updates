@@ -8,6 +8,7 @@ from Agents.orchestrator import orchestrator_agent
 from Agents.ingestion import ingestion_agent
 from Agents.domain_config import DOMAIN_REGISTRY
 from Agents.domain_intelligence import run_domain_action
+from Agents.domain_dashboard import run_domain_dashboard
 from rag import list_document_records
 
 
@@ -303,6 +304,22 @@ def documents(domain: str | None = None):
 # =========================================================
 # DOMAIN INTELLIGENCE ACTIONS
 # =========================================================
+
+@app.post("/domain-dashboard")
+def domain_dashboard(domain: str):
+    if domain not in DOMAIN_REGISTRY:
+        raise HTTPException(status_code=400, detail=f"Unknown NEXUS domain: {domain}")
+    try:
+        return {"dashboard": run_domain_dashboard(domain)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        print("\n========== DOMAIN DASHBOARD ERROR ==========")
+        print("Error type:", type(exc).__name__)
+        print("Error:", str(exc))
+        print("============================================\n")
+        raise HTTPException(status_code=500, detail=f"Domain dashboard failed: {str(exc)}")
+
 
 @app.post("/domain-action")
 def domain_action(request: DomainActionRequest):
