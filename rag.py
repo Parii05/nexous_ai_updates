@@ -328,6 +328,58 @@ def upload_document(
         )
         raise
 
+def list_document_records(domain: str | None = None) -> list[dict]:
+    """Return persisted document registry records from the existing Pinecone index."""
+    ids = []
+
+    try:
+        listed = index.list(namespace=DOC_NAMESPACE, prefix="document-")
+        for batch in listed:
+            if isinstance(batch, dict):
+                batch_ids = batch.get("ids", [])
+            else:
+                batch_ids = getattr(batch, "ids", None) or []
+            ids.extend(batch_ids)
+    except TypeError:
+        listed = index.list(namespace=DOC_NAMESPACE)
+        for batch in listed:
+            batch_ids = batch.get("ids", []) if isinstance(batch, dict) else (getattr(batch, "ids", None) or [])
+            ids.extend([item for item in batch_ids if str(item).startswith("document-")])
+
+    if not ids:
+        return []
+
+    records = []
+    for start in range(0, len(ids), 100):
+        fetched = index.fetch(ids=ids[start:start + 100], namespace=DOC_NAMESPACE)
+        vectors = fetched.get("vectors", {}) if isinstance(fetched, dict) else getattr(fetched, "vectors", {}) or {}
+
+        iterable = vectors.items() if hasattr(vectors, "items") else []
+        for vector_id, vector in iterable:
+            metadata = vector.get("metadata", {}) if isinstance(vector, dict) else (getattr(vector, "metadata", {}) or {})
+            if not metadata:
+                continue
+            if domain and metadata.get("domain") != domain:
+                continue
+            records.append({
+                "document_id": metadata.get("document_id") or vector_id.replace("document-", "", 1),
+                "filename": metadata.get("filename") or metadata.get("source") or "Unknown",
+                "source": metadata.get("source") or metadata.get("filename"),
+                "domain": metadata.get("domain", "General"),
+                "file_type": metadata.get("file_type", "unknown"),
+                "status": metadata.get("status", "unknown"),
+                "ocr": bool(metadata.get("ocr", False)),
+                "indexed": bool(metadata.get("indexed", False)),
+                "chunk_count": int(metadata.get("chunk_count", 0) or 0),
+                "created_at": metadata.get("created_at"),
+                "updated_at": metadata.get("updated_at"),
+                "error": metadata.get("error"),
+            })
+
+    records.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    return records
+
+
 # ---------------------------------------------------------------------
 # 5. QUERY DECOMPOSITION
 # ---------------------------------------------------------------------
