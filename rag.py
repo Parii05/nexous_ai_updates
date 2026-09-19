@@ -52,6 +52,7 @@ class RAGState(TypedDict, total=False):
     """Shared state for the RAG pipeline."""
 
     question: str
+    domain: str | None
     sub_queries: list[str]
     retrieved_chunks: list[dict]
     memories: list[dict]
@@ -132,7 +133,13 @@ def chunk_text(
 # 4. UPLOAD PDF TO PINECONE
 # ---------------------------------------------------------------------
 
-def _index_text(raw_text: str, source_name: str, domain: str | None = None, ocr: bool = False):
+def _index_text(
+    raw_text: str,
+    source_name: str,
+    domain: str | None = None,
+    ocr: bool = False,
+    document_id: str | None = None,
+):
     """Chunk, embed and index extracted text with source/domain metadata."""
     chunks = chunk_text(raw_text)
 
@@ -140,6 +147,8 @@ def _index_text(raw_text: str, source_name: str, domain: str | None = None, ocr:
         raise ValueError("No readable text could be extracted from the document.")
 
     embeddings = embedder.encode(chunks, show_progress_bar=True)
+    normalized_domain = domain or "General"
+    now = datetime.utcnow().isoformat()
 
     vectors = [
         (
@@ -148,10 +157,11 @@ def _index_text(raw_text: str, source_name: str, domain: str | None = None, ocr:
             {
                 "text": chunk,
                 "source": source_name,
-                "domain": domain or "General",
+                "domain": normalized_domain,
                 "type": "document_chunk",
                 "ocr": ocr,
-                "created_at": datetime.utcnow().isoformat(),
+                "document_id": document_id,
+                "created_at": now,
             },
         )
         for emb, chunk in zip(embeddings, chunks)
@@ -159,6 +169,30 @@ def _index_text(raw_text: str, source_name: str, domain: str | None = None, ocr:
 
     for i in range(0, len(vectors), 100):
         index.upsert(vectors=vectors[i:i + 100], namespace=DOC_NAMESPACE)
+
+    # One registry record per uploaded document. It lives in the same
+    # Pinecone namespace, but retrieval explicitly filters to document_chunk.
+    registry_id = f"document-{document_id or uuid.uuid4()}"
+    registry_vector = embeddings.mean(axis=0).tolist()
+    index.upsert(
+        vectors=[(
+            registry_id,
+            registry_vector,
+            {
+                "filename": source_name,
+                "source": source_name,
+                "domain": normalized_domain,
+                "file_type": Path(source_name).suffix.lower().lstrip(".") or "unknown",
+                "status": "indexed",
+                "ocr": ocr,
+                "indexed": True,
+                "chunk_count": len(vectors),
+                "document_id": document_id,
+                "created_at": now,
+            },
+        )],
+        namespace=DOC_NAMESPACE,
+    )
 
     print(f"[+] Uploaded {len(vectors)} chunks to Pinecone namespace '{DOC_NAMESPACE}'")
     return len(vectors)
@@ -175,51 +209,124 @@ def upload_pdf(pdf_path: str, source_name: str | None = None, domain: str | None
     )
 
 
-def upload_document(file_path: str, source_name: str | None = None, domain: str | None = None):
-    """Extract and index PDF, TXT, DOCX or image documents.
+def upload_document(
+    file_path: str,
+    source_name: str | None = None,
+    domain: str | None = None,
+    document_id: str | None = None,
+):
+    """Extract and index supported documents and record lifecycle metadata.
 
-    Images use Tesseract OCR. DOCX uses python-docx. Legacy .doc files
-    should be converted to DOCX before upload.
+    Legacy .doc files remain unsupported because the current environment has
+    no guaranteed Word/LibreOffice conversion dependency.
     """
     path = Path(file_path)
     extension = path.suffix.lower()
     source = source_name or path.name
+    normalized_domain = domain or "General"
+    ocr = extension in {".png", ".jpg", ".jpeg", ".webp"}
 
-    if extension == ".pdf":
-        return upload_pdf(file_path, source_name=source, domain=domain)
-
-    if extension == ".txt":
-        raw_text = path.read_text(encoding="utf-8", errors="ignore")
-        return _index_text(raw_text, source, domain=domain)
-
-    if extension == ".docx":
-        from docx import Document
-
-        document = Document(file_path)
-        raw_text = "\n\n".join(
-            paragraph.text.strip()
-            for paragraph in document.paragraphs
-            if paragraph.text.strip()
+    if extension == ".doc":
+        raise ValueError(
+            "Legacy .doc files are not supported by the current ingestion environment. "
+            "Convert the file to .docx before uploading."
         )
-        return _index_text(raw_text, source, domain=domain)
 
-    if extension in {".png", ".jpg", ".jpeg", ".webp"}:
-        try:
-            import pytesseract
-            from PIL import Image
-        except ImportError as exc:
-            raise RuntimeError(
-                "OCR dependencies are missing. Install pytesseract and Pillow, "
-                "and make sure the Tesseract OCR engine is installed."
-            ) from exc
+    if extension not in {".pdf", ".txt", ".docx", ".png", ".jpg", ".jpeg", ".webp"}:
+        raise ValueError(
+            f"Unsupported document type: {extension or 'unknown'}. "
+            "Supported types: PDF, TXT, DOCX, PNG, JPG, JPEG, WEBP."
+        )
 
-        text = pytesseract.image_to_string(Image.open(file_path))
-        return _index_text(text, source, domain=domain, ocr=True)
+    document_id = document_id or str(uuid.uuid4())
+    now = datetime.utcnow().isoformat()
 
-    raise ValueError(
-        f"Unsupported document type: {extension or 'unknown'}. "
-        "Supported types: PDF, TXT, DOCX, PNG, JPG, JPEG, WEBP."
+    # Create a processing record before extraction so the library can expose
+    # failures as well as successful documents.
+    registry_id = f"document-{document_id}"
+    registry_embedding = embedder.encode([source])[0].tolist()
+    base_metadata = {
+        "filename": source,
+        "source": source,
+        "domain": normalized_domain,
+        "file_type": extension.lstrip(".") or "unknown",
+        "status": "processing",
+        "ocr": ocr,
+        "indexed": False,
+        "chunk_count": 0,
+        "document_id": document_id,
+        "created_at": now,
+    }
+    index.upsert(
+        vectors=[(registry_id, registry_embedding, base_metadata)],
+        namespace=DOC_NAMESPACE,
     )
+
+    try:
+        if extension == ".pdf":
+            raw_text = extract_text_from_pdf(file_path)
+        elif extension == ".txt":
+            raw_text = path.read_text(encoding="utf-8", errors="ignore")
+        elif extension == ".docx":
+            from docx import Document
+            document = Document(file_path)
+            raw_text = "\n\n".join(
+                paragraph.text.strip()
+                for paragraph in document.paragraphs
+                if paragraph.text.strip()
+            )
+        else:
+            try:
+                import pytesseract
+                from PIL import Image
+            except ImportError as exc:
+                raise RuntimeError(
+                    "OCR dependencies are missing. Install pytesseract and Pillow, "
+                    "and make sure the Tesseract OCR engine is installed."
+                ) from exc
+            raw_text = pytesseract.image_to_string(Image.open(file_path))
+
+        chunk_count = _index_text(
+            raw_text,
+            source,
+            domain=normalized_domain,
+            ocr=ocr,
+            document_id=document_id,
+        )
+
+        indexed_metadata = dict(base_metadata)
+        indexed_metadata.update({
+            "status": "indexed",
+            "indexed": True,
+            "chunk_count": chunk_count,
+            "updated_at": datetime.utcnow().isoformat(),
+        })
+        index.upsert(
+            vectors=[(registry_id, registry_embedding, indexed_metadata)],
+            namespace=DOC_NAMESPACE,
+        )
+        return {
+            "success": True,
+            "status": "indexed",
+            "document_id": document_id,
+            "chunk_count": chunk_count,
+            "ocr": ocr,
+            "domain": normalized_domain,
+        }
+
+    except Exception as exc:
+        failed_metadata = dict(base_metadata)
+        failed_metadata.update({
+            "status": "failed",
+            "indexed": False,
+            "error": str(exc),
+            "updated_at": datetime.utcnow().isoformat(),
+        })
+        index.upsert(
+            vectors=[(registry_id, registry_embedding, failed_metadata)],
+            namespace=DOC_NAMESPACE,
+        )
+        raise
 
 # ---------------------------------------------------------------------
 # 5. QUERY DECOMPOSITION
@@ -325,19 +432,34 @@ def rerank_candidates(query: str, candidates: list[dict]) -> list[dict]:
     return ranked[:RERANK_TOP_K]
 
 
-def retrieve_chunks(query: str, top_k: int = TOP_K) -> list[dict]:
+def retrieve_chunks(
+    query: str,
+    top_k: int = TOP_K,
+    domain: str | None = None,
+) -> list[dict]:
     """
     Retrieves document chunks from the document namespace.
     """
 
     q_vec = embedder.encode([query])[0].tolist()
 
-    results = index.query(
-        vector=q_vec,
-        top_k=RERANK_CANDIDATE_K,
-        include_metadata=True,
-        namespace=DOC_NAMESPACE,
-    )
+    query_kwargs = {
+        "vector": q_vec,
+        "top_k": RERANK_CANDIDATE_K,
+        "include_metadata": True,
+        "namespace": DOC_NAMESPACE,
+        "filter": {"type": {"$eq": "document_chunk"}},
+    }
+
+    if domain:
+        query_kwargs["filter"] = {
+            "$and": [
+                {"type": {"$eq": "document_chunk"}},
+                {"domain": {"$eq": domain}},
+            ]
+        }
+
+    results = index.query(**query_kwargs)
 
     chunks = []
 
@@ -350,13 +472,19 @@ def retrieve_chunks(query: str, top_k: int = TOP_K) -> list[dict]:
                 "text": text,
                 "score": round(match.get("score", 0), 4),
                 "source": metadata.get("source"),
+                "domain": metadata.get("domain"),
+                "ocr": metadata.get("ocr", False),
+                "document_id": metadata.get("document_id"),
             })
 
     ranked_chunks = rerank_candidates(query, chunks)
     return ranked_chunks[:top_k]
 
 
-def retrieve_with_decomposition(question: str) -> tuple[list[str], list[dict]]:
+def retrieve_with_decomposition(
+    question: str,
+    domain: str | None = None,
+) -> tuple[list[str], list[dict]]:
     """
     Decomposes the question, retrieves chunks for each sub-query,
     and deduplicates repeated chunks.
@@ -373,7 +501,7 @@ def retrieve_with_decomposition(question: str) -> tuple[list[str], list[dict]]:
     all_chunks = []
 
     for sub_q in sub_queries:
-        chunks = retrieve_chunks(sub_q)
+        chunks = retrieve_chunks(sub_q, domain=domain)
 
         for chunk in chunks:
             if chunk["text"] not in seen_texts:
@@ -618,7 +746,7 @@ def retrieve_documents_node(state: RAGState) -> RAGState:
     all_chunks = []
 
     for sub_q in sub_queries:
-        for chunk in retrieve_chunks(sub_q):
+        for chunk in retrieve_chunks(sub_q, domain=state.get("domain")):
             if chunk["text"] not in seen_texts:
                 seen_texts.add(chunk["text"])
                 all_chunks.append(chunk)
@@ -782,7 +910,7 @@ def build_result_metadata(state: RAGState) -> dict:
 
 
 
-def answer_question(question: str) -> dict:
+def answer_question(question: str, domain: str | None = None) -> dict:
     """
     Answers the user's question and returns structured metadata.
     """
@@ -794,6 +922,7 @@ def answer_question(question: str) -> dict:
 
     state: RAGState = {
         "question": question,
+        "domain": domain,
         "sub_queries": [],
         "retrieved_chunks": [],
         "memories": [],
